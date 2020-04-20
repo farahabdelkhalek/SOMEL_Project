@@ -5,26 +5,33 @@ import json
 import pyodbc
 from pymodbus.client.sync import ModbusTcpClient
 from datetime import datetime
-import requests
-from requests.exceptions import ConnectionError
+from pymodbus.constants import Endian
+from pymodbus.payload import BinaryPayloadDecoder
 
 
-# Requisites to connect to SQL server => used in function Connect_SQL_Server
+
+
+# Requisites to connect to SQL server => used in function Connect_SQL_Server 
 server = '10.64.6.103'
 username = 'CapteursSoMel'
 password = 'Capteurs_2020!'
 database = 'Demonstrateur_Live_Tree_Database_test'
 
 
+
+# These classes are used to create an custom error
 class Error(Exception):
    """Base class for other exceptions"""
    pass
 
 class ConnectionError(Error):
+   """ Custom Error for Connection Problems """
    pass
 
 class ReturnError(Error):
+   """ Custom Error for Return Problems """
    pass
+
 
 
 # Connects to SQL server => returns the connection and the cursor to be used for queries
@@ -39,139 +46,286 @@ def Connect_SQL_Server(server,username,password,database):
       print ("Make sure you used the right credentials") 
 
 
-# Contenates 2 register values to be stored in the modbus table later on
-# => each register is a 16 bits word
-def concatenate_list_data(list):
-    result= ''
-    for element in list:
-        result += str(element)
-    return result
 
-
-
-# Connects to Modbus central measurement using the ip address 10.64.7.1 
-# => returns the modbus client 
-def Connect_Modbus():
+# Connect_Onduleur(): Create a connection with SQL Server, Gets the IP Address of the Onduleur from the database,
+# and uses this IP (10.64.6.12) to connect to Modbus
+def Connect_Onduleur():
    try:
-      mclient = ModbusTcpClient('10.64.7.1')
+      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
+      cursor.execute('select IPAddress.IP_Address from IPAddress,Sensor where Sensor.ID_IPAddress = IPAddress.ID_IPAddress and Sensor.Description=?',"Onduleur") 
+      addr = cursor.fetchone()[0]
+      mclient = ModbusTcpClient("10.64.6.12")
       mclient.connect()
-      print("Successfully Connected to MODBUS central measurement")
       return mclient
 
    except ConnectionError:
-      print("Couldn't connected to 10.64.7.1")
-
-
-# Get_Register(desc): Gets the register's address according for the description (the name)
-# => a connection to the sql server must be established first, we use the Connect_SQL_Server function that returns the cnxn and cursor
-# => query to get the address according to the desc given to the function as a parameter
-# => cursor.fetchone() returns a list
-# => [0] returns the first element of the list that is the address as int
-def Get_Register(desc):
-   cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-   cursor.execute("SELECT Address FROM tampon WHERE Description=?",desc)
-   register=cursor.fetchone()[0]
-   return register
+      print("Could not connect to 10.64.6.12")
 
 
 
-# Get_Length(desc) : Gets the register's length (Word_Count) according to the description 
-# => a connection to the sql server must be established first, we use the Connect_SQL_Server function that returns the cnxn and cursor
-# => query to get the length according to the desc given to the function as a parameter
-# => cursor.fetchone() returns a list
-# => [0] returns the first element of the list that is the length as int
-def Get_Length(desc):
-   cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-   cursor.execute("SELECT Word_Count FROM tampon WHERE Description=?",desc)
-   length=cursor.fetchone()[0]
-   return length 
-
-
-
-# Get_Modbus_Value(slave,mclient) : Gets the values of the modbus counters according to the slave's number
-# => a connection to the sql server must be established first, we use the Connect_SQL_Server function that returns the cnxn and cursor
-# => query to get the list of all the descriptions in the tampon table, therefore all the modbus counters
-# => cursor.fetchall() returns all the list
-# => loop to go threw all the list rows
-# => in each row, mclient.read_holding_registers gets the register values with the corresponding :
-# => address : Get_Register(i[0]) => i[0] stands for the address of the register in line i (the first parameter)
-# => length : Get_Length(i[0]) => i[0] stands for the length of the register in line i (the first parameter)
-# => unit is the slave number specified by the user when calling the function => it goes from 1 to 14
-# => this function returns a list of all the register values captured by the counters
-def Get_Modbus_Value(slave,mclient):
-   cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-   cursor.execute("Select Description from tampon")
-   values=[]
-   row=cursor.fetchall()
+# Connect_Onduleur(): Create a connection with SQL Server, Gets the IP Address of the PV from the database,
+# and uses this IP (10.64.7.1) to connect to Modbus
+def Connect_PV():
    try:
-      for i in row:
-         data = mclient.read_holding_registers(Get_Register(i[0]),Get_Length(i[0]), unit=slave)
-         reg = data.registers
-         for j in range(0,2):
-            val=(concatenate_list_data(reg))
-         values.append(val)
-      return values
+      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
+      cursor.execute('select IPAddress.IP_Address from IPAddress,Sensor where Sensor.ID_IPAddress = IPAddress.ID_IPAddress and Sensor.Description=?',"PV")
+      addr = cursor.fetchone()[0]
+      mclient = ModbusTcpClient("10.64.7.1")
+      mclient.connect()
+      return mclient
+   
+   except ConnectionError:
+      print("Could not connect to 10.64.7.1")
+
+
+# Get_Register(addr): Gets the registers according for the sensor address given
+#=> a connection to the sql server must be established first, we use the Connect_SQL_Server function that returns the cnxn and cursor
+#=> query to get the registers according to the addr given to the function as a parameter
+#=> cursor.fetchall() returns a list
+#=> the list is stored in a table result and returned by the function 
+def Get_Register(addr):
+   try:
+      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
+      cursor.execute("SELECT Register.Register FROM Register,Sensor,Register_Sensor WHERE Register.idRegister=Register_Sensor.IDRegister and Sensor.IDSensor=Register_Sensor.IDSensor and Sensor.Address=?",addr)
+      register=cursor.fetchall()
+      result=[]
+      for i in range (0,len(register)):
+         result.append(register[i])
+      return result
+   
+   except ReturnError:
+      print("Nothing to Fetch from address",addr)
+
+
+
+#Get_RegisterID(register): Gets the given register its ID
+#=> a connection to the sql server must be established first, we use the Connect_SQL_Server function that returns the cnxn and cursor
+#=> query to get the address according to the register's name given to the function as a parameter
+#=> cursor.fetchone() returns a list
+#=> [0] returns the first element of the list that is the address as int
+def Get_RegisterID(register):
+   try:
+      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
+      cursor.execute("SELECT idRegister FROM Register where Register=?",register)
+      result = cursor.fetchone()[0]
+      return result
 
    except ReturnError:
-      print("Could not fetch any data from rows")
+      print("Nothing to Fetch from register",register)
 
 
-# Publish_MQTT(list): this function takes into parameter the list of values published by Get_Modbus_Value
-# => Creates a client MQTT that connects to the broker on the local host on port 1883
-# => Transforms the list of integers to json using the function json.dumps
-# => Publishes it to the topic data_req
-# On the other hand, a subscriber on the same topic must be listening when the client publishes the values
+
+#Get_Length(desc) : Gets the register's length (Word_Count) according to the register given as a parameter
+#=> a connection to the sql server must be established first, we use the Connect_SQL_Server function that returns the cnxn and cursor
+#=> query to get the length according to the register given to the function as a parameter
+#=> cursor.fetchone() returns a list
+#=> [0] returns the first element of the list that is the length as int
+def Get_Length(register):
+   try:
+      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
+      cursor.execute("SELECT RegisterCount FROM Register WHERE Register=?",register)
+      length=cursor.fetchone()[0]
+      return length
+
+   except ReturnError:
+      print("Nothing to Fetch from register",register)
+
+
+
+#Get_SensorAddr(SensorID): Gets the sensor's address from the table Sensor according to its ID
+#=> a connection to the sql server must be established first, we use the Connect_SQL_Server function that returns the cnxn and cursor
+#=> query to get the length according to the desc given to the function as a parameter
+#=> cursor.fetchone() returns a list
+#=> [0] returns the first element of the list that is the length as int 
+def Get_SensorAddr(SensorID):
+   try:
+      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
+      list=[]
+      for i in range (0,len(SensorID)):
+         cursor.execute("SELECT Address FROM Sensor WHERE idSensor=?",SensorID[i])
+         sensorAddr=cursor.fetchone()[0]
+         list.append(sensorAddr)
+      return list
+
+   except ReturnError:
+      print("Nothing to Fetch from sensor",SensorID) 
+
+
+
+#Get_Modbus_Value(listS,mclient) : Gets the values of the modbus values according to the list of sensors specified
+#=> a connection to the sql server must be established first, we use the Connect_SQL_Server function that returns the cnxn and cursor
+#=> Get_SensorAddr(listS) returns the addresses of all the sensors
+#=> Get_Register(SensorAddr[i]) returns the list of registers for each sensor stored in a table registers
+#=> Get_RegisterID(Registers[j][0]) returns the list of ids for each register stored in a table registre
+#=> in each row, mclient.read_holding_registers(Registers[k][0],Get_Length(Registers[k][0]), unit=SensorAddr[i])
+#=> address : Get_Register(k[0]) => i[0] stands for the address of the register in line i (the first parameter)
+#=> length : Get_Length(k[0]) => i[0] stands for the length of the register in line i (the first parameter)
+#=> unit : SensorAddr[i] => is the slave address from the list SensorAddr
+#=> this function returns a list of all the register values captured by the counters
+#=> Decoder is used to format the output of each register
+#=> query to get the type of each registre's value
+#=> cursor.fetchone()[0] returns one element
+#=> each type is tested, and given the right decoder format#=> Decoder is used to format the output of each register
+#=> int types are converted to float to match the column data type in SQL Server
+#=> converted values are appended in a table result
+#=> sensor ids are appended in a table sensor
+#=> datetime.now() returns the time when modbus data is captured
+def Get_Modbus_Value(listS,mclient):
+   try:
+       cursor,cnxn = Connect_SQL_Server(server,username,password,database)
+       result=[]
+       registre=[]
+       sensor=[]
+       SensorAddr=Get_SensorAddr(listS)
+       for i in range (0,len(SensorAddr)):
+         Registers=Get_Register(SensorAddr[i])
+
+         for j in range (0,len(Registers)):
+            registre.append(Get_RegisterID(Registers[j][0]))
+
+         for k in range (0,len(Registers)):
+            data = mclient.read_holding_registers(Registers[k][0],Get_Length(Registers[k][0]), unit=SensorAddr[i])
+            reg = data.registers
+            decoder = BinaryPayloadDecoder.fromRegisters(reg,byteorder=Endian.Big,wordorder=Endian.Little)
+            cursor.execute("select Register.IDType from Register,TypeRegister where Register.IDType = TypeRegister.idTypeRegister and Register.Register = ?",Registers[k][0])
+            type= cursor.fetchone()[0]
+
+            if(type==1):
+               val=float('{0:.2f}'.format(decoder.decode_16bit_uint()))
+            elif (type==2):
+               val = float('{0:.2f}'.format(decoder.decode_32bit_uint()))
+            elif (type==3):
+               val = float('{0:.2f}'.format(decoder.decode_16bit_int()))
+            elif (type==4):
+               val = float('{0:.2f}'.format(decoder.decode_32bit_int()))
+            elif (type==5):
+               val = float('{0:.2f}'.format(decoder.decode_32bit_float()))
+            result.append(val)
+            sensor.append(listS[i])
+       date=datetime.now()
+       return result,registre,sensor,date
+
+   except ReturnError:
+      print("Could not read modbus values from sensors",listS)
+
+
+
+
+#Publish_MQTT(list): this function takes into parameter the list of values published by Get_Modbus_Value
+#=> Creates a client MQTT that connects to the broker on the local host on port 1883
+#=> Transforms the list of integers to json using the function json.dumps
+#=> Publishes it to the topic data_req
+#On the other hand, a subscriber on the same topic must be listening when the client publishes the values 
 def Publish_MQTT(list):
    client=mqtt.Client()
    try:
       client.connect("localhost",1883)
-      print("Successfully Connected to Database")
       client.publish("data_req",json.dumps(list))
-      print("Data Published")
+      print("Data Successfully Published Via MQTT")
       client.disconnect()
-   
+      
    except ConnectionError:
       print("Could not connect to broker on localhost port 1883")
 
 
-# Insert_Modbus_Values(list): the list of values returned by Get_Modbus_Value is used here as a parameter
-# => 6 variables are created, and given a value of that list consecutively
-# => a connection to SQL server is created with the function Connect_SQL_Server
-# => query to insert into modbus table the variables created
-# => cnxn.commit() is necessary to save the changes to modbus table
-def Insert_Modbus_Values(list):
-    I1,I2,I3,Total_positive_active_energy,Total_active_power,Total_power_factor = [list[i] for i in range(0,len((list)))]
-    cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-    cursor.execute("insert into modbus(I1,I2,I3,Total_positive_active_energy,Total_active_power,Total_power_factor,TIMESTAMP) values (?,?,?,?,?,?,?)",I1,I2,I3,Total_positive_active_energy,Total_active_power,Total_power_factor,datetime.now())
-    cnxn.commit()
+
+
+# Get_Sensor(sensor) : Connects to the sensor according to the user's input, either PV or Onduleur,
+#=> Connects to SQL Server
+#=> and gets the list of addresses for the corresponding sensor
+#=> Get_SensorID(i) returns the ID of each address
+def Get_Sensor(sensor):
+   try:
+      if (sensor=="PV"):
+         client = Connect_PV()
+      elif (sensor=="Onduleur"):
+         client = Connect_Onduleur()
+      else :
+         print ("No such sensor ")
+
+      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
+      cursor.execute("SELECT Sensor.Address FROM Sensor where Sensor.Description=?",sensor)
+      row=cursor.fetchall()
+      values=[]
+      for i in row:
+         values.append(Get_SensorID(i))
+      return values,client
+
+   except ReturnError:
+      print("Nothing to Fetch from Sensor",sensor)
+
+
+
+# Get_SensorID(sensor): returns the ID of each sensor address
+def Get_SensorID(sensor):
+   try:
+      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
+      cursor.execute("Select idSensor from Sensor where Address=?",sensor)
+      SensorID=cursor.fetchone()[0]
+      return SensorID
+
+   except ReturnError:
+      print("Nothing to Fetch from Sensor",sensor)
 
 
 
 
-# This part is the main, where the functions are called
+# Insert_Modbus_Values(values,registre,sensor,date): the list of values,registers,and sensors returned by Get_Modbus_Value is used here as a parameter
+#=> a connection to SQL server is created with the function Connect_SQL_Server
+#=> query to insert into modbus table the variables given in the parameter
+#=> cnxn.commit() is necessary to save the changes to modbus table 
+def Insert_Modbus_Values(values,registre,sensor,date):
+   try:
+      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
+      for i in range (0,len(values)):
+           val=cursor.execute("insert into Value(IDSensor,IDRegister,Value,Timestamp) values (?,?,?,?)",sensor[i],registre[i],values[i],date)
+           cnxn.commit()
+      print ("Insert was successfull")
+      print ("Values : ",values)
+      return val
+
+   except ReturnError:
+      print("Could not Insert any value into table Value")
+
+
+
+# Write_Register(register,data) : Write data specified by the user to specified register
+# Each command should be followed by a rising edge of bit 40246
+def Write_Register(register,data):
+   try:
+      client = Connect_Onduleur()
+      client.write_registers(register,data)
+      Activation_Bit(client)
+      print("Writing to register",register,"successfull")
+
+   except ReturnError:
+      print("Could not Write to register")
+
+
+
+# Actiation_Bit : Modifying the bit 40246 from 0 to 1 for validating the command given 
+def Activation_Bit(client):
+   try:
+      client.write_registers(40246,0)
+      client.write_registers(40246,1)
+
+   except ReturnError:
+      print("Could not activate bit 40246")
+
+
+
+
+
+#This part is the MAIN, where the functions are called
 # A loop is created so that the capturing, storing, and publishing with MQTT is continuous
-client=Connect_Modbus()
+
 #while(1==1):
-values=Get_Modbus_Value(6,client)
+Sensor_IDs,client=Get_Sensor("PV")
+values,registre,sensor,date=Get_Modbus_Value(Sensor_IDs,client)
+Insert_Modbus_Values(values,registre,sensor,date)
 Publish_MQTT(values)
-Insert_Modbus_Values(values)
+#Write_Register(40242,10000)
 
 
-#Read data from onduleurs
 
 
-def twos_complement(input_value, num_bits):
-    """Calculates a two's complement integer from the given input value's bits."""
-    mask = 2 ** (num_bits - 1)
-    return -(input_value & mask) + (input_value & ~mask)
-
-def signed(unsigned_num):
-   comp=twos_complement(unsigned_num,16)
-   return unsigned_num + comp
-
-
-def Connect_Onduleur():
-   mclient = ModbusTcpClient('10.64.6.12')
-   mclient.connect()
-   r=mclient.read_holding_registers(40090,2,unit=1)
-   print(- signed(r.registers[0]),r.registers[1])
