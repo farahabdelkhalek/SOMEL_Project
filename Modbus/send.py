@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import paho.mqtt.client as mqtt
+import paho.mqtt.publish as publish
 import time
 import json
 import pyodbc
@@ -11,7 +12,8 @@ from pymodbus.payload import BinaryPayloadDecoder
 
 
 
-# Requisites to connect to SQL server => used in function Connect_SQL_Server 
+
+# Requisites to connect to SQL server => used in function Connect_SQL_Server
 server = '10.64.6.103'
 username = 'CapteursSoMel'
 password = 'Capteurs_2020!'
@@ -43,6 +45,7 @@ def Connect_SQL_Server(server,username,password,database):
 
    except ConnectionError :
       print ("Could Not Connect To MYSQL Server")
+
       print ("Make sure you used the right credentials") 
 
 
@@ -216,15 +219,18 @@ def Get_Modbus_Value(listS,mclient):
 #=> Transforms the list of integers to json using the function json.dumps
 #=> Publishes it to the topic data_req
 #On the other hand, a subscriber on the same topic must be listening when the client publishes the values 
-def Publish_MQTT(list):
-   client=mqtt.Client()
-   try:
-      client.connect("localhost",1883)
-      client.publish("data_req",json.dumps(list))
-      print("Data Successfully Published Via MQTT")
-      client.disconnect()
-      
-   except ConnectionError:
+def Publish_MQTT(values,register,sensor,date):
+  cursor,cnxn = Connect_SQL_Server(server,username,password,database)
+  for i in range(0,len(register)):
+     cursor.execute("Select Topic from Register_Sensor where IDRegister=? and IDSensor=?",register[i],sensor[i]) 
+     t=cursor.fetchone()[0]
+     client=mqtt.Client()
+     try:
+       client.connect("localhost",1883)
+       client.publish(t,payload=json.dumps(values[i])+ "," + " Reading Time: " + "," + str(date.hour)+ ":" + str(date.minute) +  ":" + str(date.second))
+       client.disconnect()
+
+     except ConnectionError:
       print("Could not connect to broker on localhost port 1883")
 
 
@@ -270,25 +276,6 @@ def Get_SensorID(sensor):
 
 
 
-# Insert_Modbus_Values(values,registre,sensor,date): the list of values,registers,and sensors returned by Get_Modbus_Value is used here as a parameter
-#=> a connection to SQL server is created with the function Connect_SQL_Server
-#=> query to insert into modbus table the variables given in the parameter
-#=> cnxn.commit() is necessary to save the changes to modbus table 
-def Insert_Modbus_Values(values,registre,sensor,date):
-   try:
-      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-      for i in range (0,len(values)):
-           val=cursor.execute("insert into Value(IDSensor,IDRegister,Value,Timestamp) values (?,?,?,?)",sensor[i],registre[i],values[i],date)
-           cnxn.commit()
-      print ("Insert was successfull")
-      print ("Values : ",values)
-      return val
-
-   except ReturnError:
-      print("Could not Insert any value into table Value")
-
-
-
 # Write_Register(register,data) : Write data specified by the user to specified register
 # Each command should be followed by a rising edge of bit 40246
 def Write_Register(register,data):
@@ -316,16 +303,13 @@ def Activation_Bit(client):
 
 
 
+
 #This part is the MAIN, where the functions are called
 # A loop is created so that the capturing, storing, and publishing with MQTT is continuous
 
 #while(1==1):
 Sensor_IDs,client=Get_Sensor("PV")
 values,registre,sensor,date=Get_Modbus_Value(Sensor_IDs,client)
-Insert_Modbus_Values(values,registre,sensor,date)
-Publish_MQTT(values)
+Publish_MQTT(values,registre,sensor,date)
 #Write_Register(40242,10000)
-
-
-
 
