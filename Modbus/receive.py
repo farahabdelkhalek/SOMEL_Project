@@ -6,47 +6,50 @@ from pymodbus.client.sync import ModbusTcpClient
 from datetime import datetime
 from pymodbus.constants import Endian
 from pymodbus.payload import BinaryPayloadDecoder
-from send import Connect_SQL_Server
-
-
-
-# Requisites to connect to SQL server => used in function Connect_SQL_Server
-server = '10.64.6.103'
-username = 'CapteursSoMel'
-password = 'Capteurs_2020!'
-database = 'Demonstrateur_Live_Tree_Database_test'
-
-
-
-
-
-cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-cursor.execute("Select Topic from Register_Sensor")
-topics=cursor.fetchall()
-client=mqtt.Client()
+from send import Connect_SQL_Server,Get_Mac
+import requests
 
 
 def on_message(client, userdata, message):
     print("Topic: " + message.topic)
-    print("Message: " + message.payload.decode())
-    b= message.payload.decode()
-    c=b.split(',')
+    print("Message: " + message.payload.decode("utf-8"))
+    b= message.payload.decode("utf-8")
+    #c=b.split(',')
     cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-    cursor.execute("select IDSensor,IDRegister from Register_Sensor where Topic=?",message.topic)
-    v= cursor.fetchall()
-    for i in range(0,len(v)):
-      cursor.execute("insert into Value(IDSensor,IDRegister,Value,Timestamp) values (?,?,?,?)",v[i][0],v[i][1],c[0],c[2])
+    cursor.execute("select idSensor from Topics where Topic=?",message.topic)
+    sensor=cursor.fetchone()[0]
+    cursor.execute("select Raspberry.idRaspberry from Raspberry,Sensor where Raspberry.idRaspberry = Sensor.idSensor and Sensor.idSensor = ?",sensor)
+    raspberry = cursor.fetchone()[0]
+    cursor.execute("select idTopic from Topics where Topic = ?",message.topic)
+    topic = cursor.fetchone()[0]
+    cursor.execute("insert into Mesure(Mesure,idRaspberry,idTopic) values (?,?,?)",b,raspberry,topic)
+    print("inserted")
     cnxn.commit()
 
 
-client.on_message = on_message
-client.connect("localhost",1883)
-
-for i in topics:
-   client.subscribe(i[0])
 
 
-client.loop_forever()
+
+Mac = Get_Mac()
+response = requests.get(url = "http://localhost:80/webservice.php?mac="+Mac)
+try:
+    jsonResponse = response.json()
+    arrayResponse = jsonResponse[arrayResponse]
+    if (arrayResponse is not None):
+       server,username,password,database = arrayResponse[server], arrayResponse[username], arrayResponse[password], arrayResponse[dbname]
+       cursor,cnxn = Connect_SQL_Server(server,username,password,database)
+       cursor.execute("Select Topic from Topics")
+       topics=cursor.fetchall()
+       client=mqtt.Client()
+       client.on_message = on_message
+       client.connect("localhost",1883)
+
+       for i in topics:
+          client.subscribe(i[0])
+       client.loop_forever()
+
+except ValueError:
+        print("No JSON returned")
 
 
 
