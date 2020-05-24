@@ -14,7 +14,6 @@ function Connect_Sql_Server(){
 
   $connectionInfo = array( "Database"=>dbname, "UID"=>username, "PWD"=>password);
   $connection = sqlsrv_connect( servername, $connectionInfo);
-
   if( $connection ) {
              return ($connection);
                     }
@@ -24,5 +23,6 @@ function Connect_Sql_Server(){
         }
 
 }
+
 
 ?>
