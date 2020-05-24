@@ -2,10 +2,13 @@
 import paho.mqtt.client as mqtt
 import paho.mqtt.publish as publish
 import time
+from threading import Timer
+from multiprocessing import Process
 import json
 import pyodbc
+import pytz
 from pymodbus.client.sync import ModbusTcpClient
-from datetime import datetime
+from datetime import datetime, timedelta
 from pymodbus.constants import Endian
 from pymodbus.payload import BinaryPayloadDecoder
 from getmac import get_mac_address
@@ -37,84 +40,6 @@ def Get_Mac():
 
 
 
-# Connects to SQL server => returns the connection and the cursor to be used for queries
-def Connect_SQL_Server(server,username,password,database):
-   try:
-      cnxn = pyodbc.connect('DRIVER={ODBC Driver 17 for SQL Server};SERVER='+server+';DATABASE='+database+';UID='+username+';PWD='+ password)
-      cursor = cnxn.cursor()
-      return cursor,cnxn
-
-   except ConnectionError :
-      print ("Could Not Connect To MYSQL Server")
- 
-
-
-
-# Get_Register(addr): Gets the registers according for the sensor address given
-#=> a connection to the sql server must be established first, we use the Connect_SQL_Server function that returns the cnxn and cursor
-#=> query to get the registers according to the addr given to the function as a parameter
-#=> cursor.fetchall() returns a list
-#=> the list is stored in a table result and returned by the function 
-def Get_Register(sensor):
-      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-      ID=[]
-      register=[]
-      cursor.execute("SELECT Register.idRegister FROM Register,Sensor,Topics WHERE Register.idRegister=Topics.idRegister and Sensor.IDSensor=Topics.idSensor and Sensor.idSensor=?",sensor)
-      id = cursor.fetchall()
-      for j in range (0,len(id)):
-         ID.append(id[j][0])
-         cursor.execute("select Register from Register where IDRegister=?",ID[j])
-         reg = cursor.fetchone()[0]
-         register.append(reg)
-      return ID,register
-
-
-
-
-
-#Get_Length(desc) : Gets the register's length (Word_Count) according to the register given as a parameter
-#=> a connection to the sql server must be established first, we use the Connect_SQL_Server function that returns the cnxn and cursor
-#=> query to get the length according to the register given to the function as a parameter
-#=> cursor.fetchone() returns a list
-#=> [0] returns the first element of the list that is the length as int
-def Get_Length(register):
-   try:
-      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-      cursor.execute("SELECT RegisterCount FROM Register WHERE Register=?",register)
-      length=cursor.fetchone()[0]
-      return length
-
-   except ReturnError:
-      print("Nothing to Fetch from register",register)
-
-
-
-#Get_SensorAddr(SensorID): Gets the sensor's address from the table Sensor according to its ID
-#=> a connection to the sql server must be established first, we use the Connect_SQL_Server function that returns the cnxn and cursor
-#=> query to get the length according to the desc given to the function as a parameter
-#=> cursor.fetchone() returns a list
-#=> [0] returns the first element of the list that is the length as int 
-def Get_SensorAddr(SensorID):
-   try:
-      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-      cursor.execute("SELECT Address FROM Sensor WHERE idSensor=?",SensorID)
-      sensorAddr=cursor.fetchone()[0]
-      return sensorAddr
-
-   except ReturnError:
-      print("Nothing to Fetch from sensor",SensorID)
-
-
-
-# Get the IP Address by which the sensor is reached
-def Get_IP(Addr):
-   cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-   cursor.execute("select IP_Address from Sensor,IPAddress where Sensor.ID_IPAddress = IPAddress.ID_IPAddress and Sensor.Address=?",Addr)
-   ip = cursor.fetchone()[0]
-   return ip
-
-
-
 #Get_Modbus_Value(listS,mclient) : Gets the values of the modbus values according to the list of sensors specified
 #=> a connection to the sql server must be established first, we use the Connect_SQL_Server function that returns the cnxn and cursor
 #=> Get_SensorAddr(listS) returns the addresses of all the sensors
@@ -133,41 +58,45 @@ def Get_IP(Addr):
 #=> converted values are appended in a table result
 #=> sensor ids are appended in a table sensor
 #=> datetime.now() returns the time when modbus data is captured
-def Get_Modbus_Value(listS):
+def Get_Modbus_Value(Sensors,IP,Address,RegisterID,RegisterAddr,RegisterLength,RegisterType,RegisterPeriod,P):
    try:
-       cursor,cnxn = Connect_SQL_Server(server,username,password,database)
        result=[]
-       ID=[]
-       for i in range (0,len(listS)):
-            id, value = Get_Register(listS[i])
-            cursor.execute("select IP_Address from IPAddress,Sensor where IPAddress.ID_IPAddress=Sensor.ID_IPAddress and Sensor.Address=?",Get_SensorAddr(listS[i]))
-            ip = cursor.fetchone()[0]
-            mclient = ModbusTcpClient(ip)
+       for i in range (0,len(Sensors)):
+            mclient = ModbusTcpClient(IP[i])
             mclient.connect()
-            for j in range(0,len(id)):
-               data = mclient.read_holding_registers(value[j],Get_Length(value[j]), unit=Get_SensorAddr(listS[i]))
-               reg = data.registers
-               decoder = BinaryPayloadDecoder.fromRegisters(reg,byteorder=Endian.Big,wordorder=Endian.Little)
-               cursor.execute("select Register.IDType from Register,TypeRegister where Register.IDType = TypeRegister.idTypeRegister and Register.Register = ?",value[j])
-               type = cursor.fetchone()[0]
+            for j in range(0,len(RegisterID[i])):
+		if(datetime.now()>=P[i][j]):
+		   P[i][j] = P[i][j] + timedelta(seconds=RegisterPeriod[i][j])
+		   data = mclient.read_holding_registers(RegisterAddr[i][j],RegisterLength[i][j], unit=Address[i])
+		   reg = data.registers
+                   decoder = BinaryPayloadDecoder.fromRegisters(reg,byteorder=Endian.Big,wordorder=Endian.Little)
 
-               if(type == 1):
-                  reg = float('{0:.2f}'.format(decoder.decode_16bit_uint()))
-               elif (type==2):
-                  reg = float('{0:.2f}'.format(decoder.decode_32bit_uint()))
-               elif (type==3):
-                  reg = float('{0:.2f}'.format(decoder.decode_16bit_int()))
-               elif (type==4):
-                  reg = float('{0:.2f}'.format(decoder.decode_32bit_int()))
-               elif (type==5):
-                  reg = float('{0:.2f}'.format(decoder.decode_32bit_float()))
-               result.append(reg)
-            ID.append(id)
-       date=datetime.now()
-       return result,listS,ID,date
+                   if(RegisterType[i][j] == 1):
+                     reg = float('{0:.2f}'.format(decoder.decode_16bit_uint()))
+                   elif (RegisterType[i][j]==2):
+                     reg = float('{0:.2f}'.format(decoder.decode_32bit_uint()))
+                   elif (RegisterType[i][j]==3):
+                     reg = float('{0:.2f}'.format(decoder.decode_16bit_int()))
+                   elif (RegisterType[i][j]==4):
+                     reg = float('{0:.2f}'.format(decoder.decode_32bit_int()))
+                   elif (RegisterType[i][j]==5):
+                     reg = float('{0:.2f}'.format(decoder.decode_32bit_float()))
+                   result.append(reg)
+
+       return result,P
 
    except ReturnError:
-      print("Could not read modbus values from sensors",listS)
+      print("Could not read modbus values from sensors",Sensors)
+
+
+
+def Countdown(t):
+	while t>0:
+		time.sleep(1)
+		t -= 1
+	return t
+
+
 
 
 
@@ -177,92 +106,126 @@ def Get_Modbus_Value(listS):
 #=> Transforms the list of integers to json using the function json.dumps
 #=> Publishes it to the topic data_req
 #On the other hand, a subscriber on the same topic must be listening when the client publishes the values 
-def Publish_MQTT(value,sensor,register,date):
-  cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-  for i in range (0,len(sensor)):
-    for j in range (0,len(register[i])):
-       topic = Get_Topic(sensor[i],register[i][j])
+def Publish_MQTT(result,topic,IDRaspberry,IDMesure):
+  message=[]
+  for i in range (0,len(result)):
        client=mqtt.Client()
        try:
-          client.connect("localhost",1883)
-          client.publish(topic,payload=json.dumps(value[j]))
-          #+ "," + " Reading Time: " + "," + str(date.hour)+ ":" + str(date.minute) +  ":" + str(date.second))
+          client.connect("10.64.253.10",1883)
+	  ID = int(str(IDMesure) + str(IDRaspberry))
+	  IDMesure = IDMesure + 1
+	  Timestamp_Init = datetime.utcnow()
+	  Timestamp_Init = Timestamp_Init.replace(tzinfo=pytz.utc)
+	  Timestamp_Init = Timestamp_Init.astimezone(pytz.timezone("Europe/Paris"))
+	  Timestamp_Init = Timestamp_Init.strftime("%Y-%m-%d %H:%M:%S")
+	  message.append(result[i])
+	  message.append(Timestamp_Init)
+	  message.append(ID)
+	  client.publish(topic[i],payload=(str(result[i])+ ',' +str(Timestamp_Init)+ ',' +str(ID)+ ',' +str(IDRaspberry)))
+	  time.sleep(1)
+	  client.publish("Final",payload=(str(result[i])+ ',' +str(Timestamp_Init)+ ',' +str(ID)+ ',' +str(IDRaspberry)))
           client.disconnect()
 
        except ConnectionError:
-         print("Could not connect to broker on localhost port 1883")
+         print("Could not connect to broker on localhost port 1883") 
 
 
 
-
-# Get_Sensor(sensor) : Connects to the sensor according to the user's input, either PV or Onduleur,
-#=> Connects to SQL Server
-#=> and gets the list of addresses for the corresponding sensor
-#=> Get_SensorID(i) returns the ID of each address
-def Get_Sensor(raspberry):
-      cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-      cursor.execute("SELECT Sensor.idSensor FROM Sensor,Raspberry where Sensor.idRaspberry=Raspberry.idRaspberry and Raspberry.idRaspberry=?",raspberry)
-      row=cursor.fetchall()
-      values=[]
-      for i in row:
-         values.append(i[0])
-      return values
-
-
-
-
-
-# Write_Register(register,data) : Write data specified by the user to specified register
-# Each command should be followed by a rising edge of bit 40246
-def Write_Register(register,data):
-   try:
-      client = Connect_Onduleur()
-      client.write_registers(register,data)
-      Activation_Bit(client)
-      print("Writing to register",register,"successfull")
-
-   except ReturnError:
-      print("Could not Write to register")
-
-
-
-# Actiation_Bit : Modifying the bit 40246 from 0 to 1 for validating the command given 
-def Activation_Bit(client):
-   try:
-      client.write_registers(40246,0)
-      client.write_registers(40246,1)
-
-   except ReturnError:
-      print("Could not activate bit 40246")
-
-
-
-def Get_Topic(sensor,register):
-   cursor,cnxn = Connect_SQL_Server(server,username,password,database)
-   cursor.execute("select Topic from Topics,Sensor,Register where Sensor.IDSensor=Topics.idSensor and Register.IDRegister=Topics.idRegister and Sensor.IDSensor=? and Register.IDRegister=?",sensor,register)
-   topic=cursor.fetchone()[0]
-   return topic
 
 
 #This part is the MAIN, where the functions are called
 # A loop is created so that the capturing, storing, and publishing with MQTT is continuous
 
 #while(1==1):
+#Write_Register(40242,10000)
 
 Mac = Get_Mac()
-response = requests.get(url = "http://localhost:80/webservice.php?mac="+Mac)
-try:
- 
-    jsonResponse = json.loads(response.text) 
-    print jsonResponse
-    arrayResponse = jsonResponse["arrayResponse"] 
-    if (arrayResponse is not None):
-       server,username,password,database = arrayResponse["servername"], arrayResponse["username"], arrayResponse["password"], arrayResponse["dbname"]
-       Sensor_IDs=Get_Sensor(2)
-       value,sensor,register,date=Get_Modbus_Value(Sensor_IDs)
-       Publish_MQTT(value,sensor,register,date)
-       #Write_Register(40242,10000)
 
-except ValueError:
+def Get_Info(Mac):
+   response = requests.get(url = "http://localhost:80/webservice.php?mac="+Mac)
+
+   try:
+   	Sensors=[]
+    	IP=[]
+    	Address=[]
+    	RegisterID=[]
+    	RegisterAddr=[]
+    	RegisterLength=[]
+    	RegisterType=[]
+	RegisterTopic=[]
+	RegisterPeriod=[]
+	Registers=[]
+	RegAddress=[]
+	RegLength=[]
+	RegType=[]
+	RegTopic=[]
+	RegPeriod=[]
+
+    	jsonResponse = json.loads(response.text)
+    	arrayResponse = jsonResponse["arrayResponse"]
+    	if (arrayResponse is not None):
+		for i in range(0,len(arrayResponse)):
+			IDRaspberry = arrayResponse["IDRaspberry"]
+			IDMesure = arrayResponse["IDMesure"]
+			Sensors.append(arrayResponse['Sensors'][i]['IDSensor'])
+			IP.append(arrayResponse['Sensors'][i]['info']['IP'])
+			Address.append(arrayResponse['Sensors'][i]['info']['SensorAddress'])
+			for j in range(0,len(arrayResponse['Sensors'][i]['info']['Registers'])):
+				RegisterID.append(arrayResponse['Sensors'][i]['info']['Registers'][j]['ID'])
+				RegisterAddr.append(arrayResponse['Sensors'][i]['info']['Registers'][j]['RegisterAddress'])
+				RegisterType.append(arrayResponse['Sensors'][i]['info']['Registers'][j]['Type'])
+				RegisterLength.append(arrayResponse['Sensors'][i]['info']['Registers'][j]['Length'])
+				RegisterTopic.append(arrayResponse['Sensors'][i]['info']['Registers'][j]['Topic'])
+				RegisterPeriod.append(arrayResponse['Sensors'][i]['info']['Registers'][j]['Period'])
+
+			Registers.append(RegisterID)
+			RegisterID=[]
+			RegAddress.append(RegisterAddr)
+			RegisterAddr=[]
+			RegLength.append(RegisterLength)
+			RegisterLength=[]
+			RegType.append(RegisterType)
+			RegisterType=[]
+			RegPeriod.append(RegisterPeriod)
+			RegisterPeriod=[]
+
+
+
+        	return (IDRaspberry,IDMesure,Sensors,IP,Address,Registers,RegAddress,RegLength,RegType,RegisterTopic,RegPeriod)
+	else:
+		print jsonResponse["message"]
+
+
+   except ValueError:
         print("No JSON returned")
 
+
+IDRaspberry,IDMesure,Sensors,IP,Address,RegisterID,RegisterAddr,RegisterLength,RegisterType,RegisterTopic,RegisterPeriod=Get_Info(Mac)
+
+
+
+#print IDRaspberry,IDMesure,Sensors,IP,Address,RegisterID,RegisterAddr,RegisterLength,RegisterType,RegisterTopic
+
+
+period=[]
+P=[]
+for i in range(0,len(Sensors)):
+	for j in range(0,len(RegisterID[i])):
+		period.append(datetime.now())
+	P.append(period)
+	period=[]
+
+while(1==1):
+     result,Temp = Get_Modbus_Value(Sensors,IP,Address,RegisterID,RegisterAddr,RegisterLength,RegisterType,RegisterPeriod,P)
+     print result
+     P=Temp
+     Publish_MQTT(result,RegisterTopic,IDRaspberry,IDMesure)
+
+
+
+
+ #period.append(datetime.now() + timedelta(seconds=RegisterPeriod[i][j]))
+                #if(datetime.now() >= period[j]):
+
+ #time = (datetime.now() + timedelta(seconds=RegisterPeriod[i][j]))
+                   #period.insert(j,time)
