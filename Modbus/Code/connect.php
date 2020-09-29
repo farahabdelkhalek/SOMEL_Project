@@ -1,3 +1,7 @@
+/* This file is used in order to establish a connection with the database running on the server side.
+The servername, username, password, dbname are predefined. */
+
+
 <?php
 
 

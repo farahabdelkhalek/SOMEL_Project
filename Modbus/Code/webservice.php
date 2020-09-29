@@ -1,3 +1,8 @@
+/* This file represents the webservice. It's role is to connect to the DB, using the connect.php file,
+and searching for the rasberry pi having a MAC similar to the one given as a parameter.
+Once found, the raspberry is given the credentials and useful infos to retrieve data.
+If it's not the case, the raspberry is not authenticated and therefore no further actions will take place. */
+
 <?php
 
 include 'connect.php';
