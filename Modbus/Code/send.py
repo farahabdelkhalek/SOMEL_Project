@@ -1,3 +1,8 @@
+/* This file runs on all the raspberry pi modules. It's role is to retrieve the MODBUS values once the connection
+is established. As for the receiving edge, once the raspberry receives data on its serial port,
+it publishes it on the Final topic via MQTT. */
+
+
 #!/usr/bin/env python
 import paho.mqtt.client as mqtt
 import paho.mqtt.publish as publish
@@ -249,7 +254,4 @@ while(1==1):
            IDValueSerial = (y[0].split(',')[1])
            print(IDRaspberrySerial,IDValueSerial)
            Publish_MQTT([0],"Final",IDRaspberrySerial,IDValueSerial)
-
-
-
 
